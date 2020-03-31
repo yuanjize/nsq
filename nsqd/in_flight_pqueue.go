@@ -68,14 +68,14 @@ func (pq *inFlightPqueue) PeekAndShift(max int64) (*Message, int64) {
 
 	return x, 0
 }
-
-func (pq *inFlightPqueue) up(j int) {
+// pri小的放在上面
+func (pq *inFlightPqueue) up(j int) {  // 保持上面的是优先级最高的？？
 	for {
 		i := (j - 1) / 2 // parent
-		if i == j || (*pq)[j].pri >= (*pq)[i].pri {
+		if i == j || (*pq)[j].pri >= (*pq)[i].pri { // 儿子优先级大，什么都不干
 			break
 		}
-		pq.Swap(i, j)
+		pq.Swap(i, j)  //爹优先级大 -》和儿子交换，儿子变爹
 		j = i
 	}
 }

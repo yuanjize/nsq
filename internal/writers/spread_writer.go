@@ -4,7 +4,7 @@ import (
 	"io"
 	"time"
 )
-
+// 分批写，每次write都是写到内存的队列，最后flush的时候 用送间隔长度/队列长度，每次这个间隔之后写出去一匹
 type SpreadWriter struct {
 	w        io.Writer
 	interval time.Duration

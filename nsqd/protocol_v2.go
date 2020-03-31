@@ -51,13 +51,14 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	go p.messagePump(client, messagePumpStartedChan)
 	<-messagePumpStartedChan
 
+	// 循环读取协议。exec，sendResponse
 	for {
 		if client.HeartbeatInterval > 0 {
 			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2))
 		} else {
 			client.SetReadDeadline(zeroTime)
 		}
-
+		// 读出参数并执行命令
 		// ReadSlice does not allocate new space for the data each request
 		// ie. the returned slice is only valid until the next call to it
 		line, err = client.Reader.ReadSlice('\n')
@@ -81,7 +82,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(V2): [%s] %s", client, params)
 
 		var response []byte
-		response, err = p.Exec(client, params)
+		response, err = p.Exec(client, params) // 执行命令
 		if err != nil {
 			ctx := ""
 			if parentErr := err.(protocol.ChildErr).Parent(); parentErr != nil {
@@ -227,10 +228,10 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 
 	// signal to the goroutine that started the messagePump
 	// that we've started up
-	close(startedChan)
+	close(startedChan) // IOLOOP开始处理消息开始
 
 	for {
-		if subChannel == nil || !client.IsReadyForMessages() {
+		if subChannel == nil || !client.IsReadyForMessages() { // 不消费-> FLUSH CLIENT
 			// the client is not ready to receive messages...
 			memoryMsgChan = nil
 			backendMsgChan = nil
@@ -243,13 +244,13 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 				goto exit
 			}
 			flushed = true
-		} else if flushed {
+		} else if flushed { //刚才已经flush过了， 可以从chanel读取消息
 			// last iteration we flushed...
 			// do not select on the flusher ticker channel
 			memoryMsgChan = subChannel.memoryMsgChan
 			backendMsgChan = subChannel.backend.ReadChan()
 			flusherChan = nil
-		} else {
+		} else { // 没有flush过
 			// we're buffered (if there isn't any more data we should flush)...
 			// select on the flusher ticker channel, too
 			memoryMsgChan = subChannel.memoryMsgChan
@@ -258,7 +259,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 		}
 
 		select {
-		case <-flusherChan:
+		case <-flusherChan: // 定时flush
 			// if this case wins, we're either starved
 			// or we won the race between other channels...
 			// in either case, force flush
@@ -273,7 +274,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 		case subChannel = <-subEventChan:
 			// you can't SUB anymore
 			subEventChan = nil
-		case identifyData := <-identifyEventChan:
+		case identifyData := <-identifyEventChan:  // 动态更新一些配置，只能改变一次？
 			// you can't IDENTIFY anymore
 			identifyEventChan = nil
 
@@ -293,12 +294,13 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 				sampleRate = identifyData.SampleRate
 			}
 
-			msgTimeout = identifyData.MsgTimeout
-		case <-heartbeatChan:
+			msgTimeout = identifyData.MsgTimeout  // In flight timeout
+		case <-heartbeatChan: // 定时向客户端发送心跳
 			err = p.Send(client, frameTypeResponse, heartbeatBytes)
 			if err != nil {
 				goto exit
 			}
+		// 下面两个向client发送消息
 		case b := <-backendMsgChan:
 			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
 				continue
@@ -345,6 +347,7 @@ exit:
 	}
 }
 
+// 读取消息，调用client的IDENTIFY
 func (p *protocolV2) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
 
@@ -634,9 +637,9 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	client.SubEventChan <- channel
 
 	return okBytes, nil
-}
+} // SUB topic channel 某个channel，就是指定消费吧
 
-func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
+func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) { // 代表准备好接受N个message了 RDY n
 	state := atomic.LoadInt32(&client.State)
 
 	if state == stateClosing {
@@ -658,7 +661,7 @@ func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 			return nil, protocol.NewFatalClientErr(err, "E_INVALID",
 				fmt.Sprintf("RDY could not parse count %s", params[1]))
 		}
-		count = int64(b10)
+		count = int64(b10) // 要接收的msg数目
 	}
 
 	if count < 0 || count > p.ctx.nsqd.getOpts().MaxRdyCount {
@@ -671,7 +674,7 @@ func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 	client.SetReadyCount(count)
 
 	return nil, nil
-}
+} // 准备好接收N个消息了 RDY N
 
 func (p *protocolV2) FIN(client *clientV2, params [][]byte) ([]byte, error) {
 	state := atomic.LoadInt32(&client.State)
@@ -697,9 +700,9 @@ func (p *protocolV2) FIN(client *clientV2, params [][]byte) ([]byte, error) {
 	client.FinishedMessage()
 
 	return nil, nil
-}
+} //干掉一个（成功处理）inflight的消息
 
-func (p *protocolV2) REQ(client *clientV2, params [][]byte) ([]byte, error) {
+func (p *protocolV2) REQ(client *clientV2, params [][]byte) ([]byte, error) { //REQ <message_id> <timeout>,Re-queue a message表示处理失败。消息重新入队
 	state := atomic.LoadInt32(&client.State)
 	if state != stateSubscribed && state != stateClosing {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot REQ in current state")
@@ -754,13 +757,13 @@ func (p *protocolV2) CLS(client *clientV2, params [][]byte) ([]byte, error) {
 	client.StartClose()
 
 	return []byte("CLOSE_WAIT"), nil
-}
+} // 客户端的ReadyCount设置为0
 
 func (p *protocolV2) NOP(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, nil
-}
+} // 空操作
 
-func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
+func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) { // PUB <topic_name> 生产msg
 	var err error
 
 	if len(params) < 2 {
@@ -861,9 +864,10 @@ func (p *protocolV2) MPUB(client *clientV2, params [][]byte) ([]byte, error) {
 	client.PublishedMessage(topicName, uint64(len(messages)))
 
 	return okBytes, nil
-}
+} // 一次publish多条
 
-func (p *protocolV2) DPUB(client *clientV2, params [][]byte) ([]byte, error) {
+func (p *protocolV2) DPUB(client *clientV2, params [][]byte) ([]byte, error) { // Publish a deferred message to a topic: DPUB <topic_name> <defer_time>
+
 	var err error
 
 	if len(params) < 3 {
@@ -927,7 +931,7 @@ func (p *protocolV2) DPUB(client *clientV2, params [][]byte) ([]byte, error) {
 	return okBytes, nil
 }
 
-func (p *protocolV2) TOUCH(client *clientV2, params [][]byte) ([]byte, error) {
+func (p *protocolV2) TOUCH(client *clientV2, params [][]byte) ([]byte, error) { // 重新设置超时时间
 	state := atomic.LoadInt32(&client.State)
 	if state != stateSubscribed && state != stateClosing {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot TOUCH in current state")
@@ -952,7 +956,7 @@ func (p *protocolV2) TOUCH(client *clientV2, params [][]byte) ([]byte, error) {
 	}
 
 	return nil, nil
-}
+} //Reset the timeout for an in-flight message
 
 func readMPUB(r io.Reader, tmp []byte, topic *Topic, maxMessageSize int64, maxBodySize int64) ([]*Message, error) {
 	numMessages, err := readLen(r, tmp)

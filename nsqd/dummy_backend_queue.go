@@ -3,7 +3,7 @@ package nsqd
 type dummyBackendQueue struct {
 	readChan chan []byte
 }
-
+// 假的二级缓存
 func newDummyBackendQueue() BackendQueue {
 	return &dummyBackendQueue{readChan: make(chan []byte)}
 }

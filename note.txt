@@ -1,0 +1,23 @@
+topic格式：
+    Category "topic"
+   	Key      topicName
+   	SubKey   ""
+
+topic格式：
+    Category "channel"
+   	Key      topicName
+   	SubKey   channelName
+
+
+
+客户端：
+
+config：
+   [interface]
+   BackoffStrategy backoff策略，返回一个duration。个人理解backoff就是做某事失败之后冷却的一段时间，防止大量client竞争损耗性能
+      ExponentialStrategy 算法：2的N次方，N是参数
+
+      11111111h
+
+https://aws.amazon.com/cn/blogs/architecture/exponential-backoff-and-jitter/
+client多的i 后还会还会gn

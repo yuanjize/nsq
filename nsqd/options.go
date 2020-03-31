@@ -29,8 +29,8 @@ type Options struct {
 	HTTPClientRequestTimeout time.Duration `flag:"http-client-request-timeout" cfg:"http_client_request_timeout"`
 
 	// diskqueue options
-	DataPath        string        `flag:"data-path"`
-	MemQueueSize    int64         `flag:"mem-queue-size"`
+	DataPath        string        `flag:"data-path"`   // 数据存放路径
+	MemQueueSize    int64         `flag:"mem-queue-size"`  // topic/channel 内存队列长度  MemQueueSize/10是in flight size
 	MaxBytesPerFile int64         `flag:"max-bytes-per-file"`
 	SyncEvery       int64         `flag:"sync-every"`
 	SyncTimeout     time.Duration `flag:"sync-timeout"`
@@ -38,7 +38,7 @@ type Options struct {
 	QueueScanInterval        time.Duration
 	QueueScanRefreshInterval time.Duration
 	QueueScanSelectionCount  int `flag:"queue-scan-selection-count"`
-	QueueScanWorkerPoolMax   int `flag:"queue-scan-worker-pool-max"`
+	QueueScanWorkerPoolMax   int `flag:"queue-scan-worker-pool-max"`  // 最大的垃圾回收线程数
 	QueueScanDirtyPercent    float64
 
 	// msg and command options
@@ -51,23 +51,23 @@ type Options struct {
 
 	// client overridable configuration options
 	MaxHeartbeatInterval   time.Duration `flag:"max-heartbeat-interval"`
-	MaxRdyCount            int64         `flag:"max-rdy-count"`
+	MaxRdyCount            int64         `flag:"max-rdy-count"`    // 客户端当前最多准备接收msg的数目
 	MaxOutputBufferSize    int64         `flag:"max-output-buffer-size"`
 	MaxOutputBufferTimeout time.Duration `flag:"max-output-buffer-timeout"`
 	MinOutputBufferTimeout time.Duration `flag:"min-output-buffer-timeout"`
 	OutputBufferTimeout    time.Duration `flag:"output-buffer-timeout"`
-	MaxChannelConsumers    int           `flag:"max-channel-consumers"`
+	MaxChannelConsumers    int           `flag:"max-channel-consumers"`  // 一个channel最多能有多少consumer
 
 	// statsd integration
-	StatsdAddress       string        `flag:"statsd-address"`
+	StatsdAddress       string        `flag:"statsd-address"`  //一个收集nsqd状态的守护进程的地址
 	StatsdPrefix        string        `flag:"statsd-prefix"`
-	StatsdInterval      time.Duration `flag:"statsd-interval"`
+	StatsdInterval      time.Duration `flag:"statsd-interval"` //采集间隔
 	StatsdMemStats      bool          `flag:"statsd-mem-stats"`
-	StatsdUDPPacketSize int           `flag:"statsd-udp-packet-size"`
+	StatsdUDPPacketSize int           `flag:"statsd-udp-packet-size"`  // write的buffer大小
 
 	// e2e message latency
 	E2EProcessingLatencyWindowTime  time.Duration `flag:"e2e-processing-latency-window-time"`
-	E2EProcessingLatencyPercentiles []float64     `flag:"e2e-processing-latency-percentile" cfg:"e2e_processing_latency_percentiles"`
+	E2EProcessingLatencyPercentiles []float64     `flag:"e2e-processing-latency-percentile" cfg:"e2e_processing_latency_percentiles"`  //要track的消息处理时间百分数
 
 	// TLS config
 	TLSCert             string `flag:"tls-cert"`

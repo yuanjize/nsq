@@ -41,7 +41,7 @@ type identifyDataV2 struct {
 }
 
 type identifyEvent struct {
-	OutputBufferTimeout time.Duration
+	OutputBufferTimeout time.Duration  // 定时flush
 	HeartbeatInterval   time.Duration
 	SampleRate          int32
 	MsgTimeout          time.Duration
@@ -49,13 +49,13 @@ type identifyEvent struct {
 
 type clientV2 struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
-	ReadyCount    int64
-	InFlightCount int64
-	MessageCount  uint64
-	FinishCount   uint64
+	ReadyCount    int64  // 客户端当前RDY的数目，目前认为是还可以消费的msg的数目
+	InFlightCount int64  // 正在处理的message数目（还没有处理完）
+	MessageCount  uint64 // 所有的消息
+	FinishCount   uint64 // 处理完的消息
 	RequeueCount  uint64
 
-	pubCounts map[string]uint64
+	pubCounts map[string]uint64 // key是publish过的topic，value是消息条数
 
 	writeLock sync.RWMutex
 	metaLock  sync.RWMutex
@@ -69,7 +69,7 @@ type clientV2 struct {
 
 	// connections based on negotiated features
 	tlsConn     *tls.Conn
-	flateWriter *flate.Writer
+	flateWriter *flate.Writer // 压缩write
 
 	// reading/writing interfaces
 	Reader *bufio.Reader
@@ -84,21 +84,21 @@ type clientV2 struct {
 
 	State          int32
 	ConnectTime    time.Time
-	Channel        *Channel
+	Channel        *Channel // 它消费的channel
 	ReadyStateChan chan int
 	ExitChan       chan int
 
-	ClientID string
+	ClientID string // clientID和hostname都是客户端ip
 	Hostname string
 
-	SampleRate int32
+	SampleRate int32 // 采样率
 
-	IdentifyEventChan chan identifyEvent
-	SubEventChan      chan *Channel
+	IdentifyEventChan chan identifyEvent // identify函数被调用的时候
+	SubEventChan      chan *Channel      // SUB的时候会把sub的channel写到这个chan里面
 
 	TLS     int32
-	Snappy  int32
-	Deflate int32
+	Snappy  int32 // 1-使用snappy压缩算法
+	Deflate int32 // 1-使用deflate压缩算法
 
 	// re-usable buffer for reading the 4-byte lengths off the wire
 	lenBuf   [4]byte
@@ -150,10 +150,12 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 	return c
 }
 
+// 客户端ip
 func (c *clientV2) String() string {
 	return c.RemoteAddr().String()
 }
 
+// 更新客户端的一些属性，并通知IdentifyEventChan
 func (c *clientV2) Identify(data identifyDataV2) error {
 	c.ctx.nsqd.logf(LOG_INFO, "[%s] IDENTIFY: %+v", c, data)
 
@@ -250,6 +252,7 @@ func (c *clientV2) Stats() ClientStats {
 	return stats
 }
 
+// 如果publish过消息，那么就算生产者。
 func (c *clientV2) IsProducer() bool {
 	c.metaLock.RLock()
 	retval := len(c.pubCounts) > 0
@@ -308,7 +311,7 @@ func (p *prettyConnectionState) GetVersion() string {
 		return fmt.Sprintf("Unknown %d", p.Version)
 	}
 }
-
+// 是否还需要消费
 func (c *clientV2) IsReadyForMessages() bool {
 	if c.Channel.IsPaused() {
 		return false
@@ -326,6 +329,7 @@ func (c *clientV2) IsReadyForMessages() bool {
 	return true
 }
 
+// 设置readyCount，如果readyCount改变了那么通知ReadyStateChan
 func (c *clientV2) SetReadyCount(count int64) {
 	oldCount := atomic.SwapInt64(&c.ReadyCount, count)
 
@@ -334,6 +338,7 @@ func (c *clientV2) SetReadyCount(count int64) {
 	}
 }
 
+// 写ReadyStateChan
 func (c *clientV2) tryUpdateReadyState() {
 	// you can always *try* to write to ReadyStateChan because in the cases
 	// where you cannot the message pump loop would have iterated anyway.
@@ -344,12 +349,14 @@ func (c *clientV2) tryUpdateReadyState() {
 	}
 }
 
+// 结束一个message调用一次
 func (c *clientV2) FinishedMessage() {
 	atomic.AddUint64(&c.FinishCount, 1)
 	atomic.AddInt64(&c.InFlightCount, -1)
 	c.tryUpdateReadyState()
 }
 
+// InFlightCount 置空
 func (c *clientV2) Empty() {
 	atomic.StoreInt64(&c.InFlightCount, 0)
 	c.tryUpdateReadyState()
@@ -360,23 +367,27 @@ func (c *clientV2) SendingMessage() {
 	atomic.AddUint64(&c.MessageCount, 1)
 }
 
+// 对应的topic的消息数+1
 func (c *clientV2) PublishedMessage(topic string, count uint64) {
 	c.metaLock.Lock()
 	c.pubCounts[topic] += count
 	c.metaLock.Unlock()
 }
 
+// 正在处理的消息-1
 func (c *clientV2) TimedOutMessage() {
 	atomic.AddInt64(&c.InFlightCount, -1)
 	c.tryUpdateReadyState()
 }
 
+// 消息从InFlightCount状态变成RequeueCount状态
 func (c *clientV2) RequeuedMessage() {
 	atomic.AddUint64(&c.RequeueCount, 1)
 	atomic.AddInt64(&c.InFlightCount, -1)
 	c.tryUpdateReadyState()
 }
 
+// 状态变成stateClosing
 func (c *clientV2) StartClose() {
 	// Force the client into ready 0
 	c.SetReadyCount(0)
@@ -384,6 +395,7 @@ func (c *clientV2) StartClose() {
 	atomic.StoreInt32(&c.State, stateClosing)
 }
 
+// PAUSE和UNPAUSE全都是更新ReadyState
 func (c *clientV2) Pause() {
 	c.tryUpdateReadyState()
 }
@@ -392,6 +404,7 @@ func (c *clientV2) UnPause() {
 	c.tryUpdateReadyState()
 }
 
+// 设置心跳间隔
 func (c *clientV2) SetHeartbeatInterval(desiredInterval int) error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()
@@ -411,6 +424,7 @@ func (c *clientV2) SetHeartbeatInterval(desiredInterval int) error {
 	return nil
 }
 
+// 设置输出buffer大小
 func (c *clientV2) SetOutputBuffer(desiredSize int, desiredTimeout int) error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()
@@ -453,6 +467,7 @@ func (c *clientV2) SetOutputBuffer(desiredSize int, desiredTimeout int) error {
 	return nil
 }
 
+// 设置采样率
 func (c *clientV2) SetSampleRate(sampleRate int32) error {
 	if sampleRate < 0 || sampleRate > 99 {
 		return fmt.Errorf("sample rate (%d) is invalid", sampleRate)
@@ -461,6 +476,7 @@ func (c *clientV2) SetSampleRate(sampleRate int32) error {
 	return nil
 }
 
+// 设置messageTimeout
 func (c *clientV2) SetMsgTimeout(msgTimeout int) error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()
@@ -498,6 +514,7 @@ func (c *clientV2) UpgradeTLS() error {
 	return nil
 }
 
+// 使用deflate压缩算法
 func (c *clientV2) UpgradeDeflate(level int) error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()
@@ -518,6 +535,7 @@ func (c *clientV2) UpgradeDeflate(level int) error {
 	return nil
 }
 
+// 使用snappy压缩算法
 func (c *clientV2) UpgradeSnappy() error {
 	c.writeLock.Lock()
 	defer c.writeLock.Unlock()
@@ -535,6 +553,7 @@ func (c *clientV2) UpgradeSnappy() error {
 	return nil
 }
 
+// FLUSH数据
 func (c *clientV2) Flush() error {
 	var zeroTime time.Time
 	if c.HeartbeatInterval > 0 {

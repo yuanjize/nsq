@@ -11,6 +11,7 @@ import (
 	"github.com/nsqio/nsq/internal/lg"
 )
 
+// 就是一个访问nsqlookupd的封装
 // lookupPeer is a low-level type for connecting/reading/writing to nsqlookupd
 //
 // A lookupPeer instance is designed to connect lazily to nsqlookupd and reconnect
@@ -18,11 +19,11 @@ import (
 // Command interface to perform a round-trip.
 type lookupPeer struct {
 	logf            lg.AppLogFunc
-	addr            string
+	addr            string   // lookup 地址
 	conn            net.Conn
 	state           int32
-	connectCallback func(*lookupPeer)
-	maxBodySize     int64
+	connectCallback func(*lookupPeer)  // connect连接成功之后回调该函数
+	maxBodySize     int64  // responsebody最大大小
 	Info            peerInfo
 }
 
@@ -90,6 +91,7 @@ func (lp *lookupPeer) Close() error {
 // reconnecting in the event of a failure.
 //
 // It returns the response from nsqlookupd as []byte
+// 执行一个命令
 func (lp *lookupPeer) Command(cmd *nsq.Command) ([]byte, error) {
 	initialState := lp.state
 	if lp.state != stateConnected {
@@ -126,6 +128,7 @@ func (lp *lookupPeer) Command(cmd *nsq.Command) ([]byte, error) {
 	return resp, nil
 }
 
+// 读取Response body
 func readResponseBounded(r io.Reader, limit int64) ([]byte, error) {
 	var msgSize int32
 

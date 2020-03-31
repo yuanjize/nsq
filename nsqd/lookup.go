@@ -12,6 +12,8 @@ import (
 	"github.com/nsqio/nsq/internal/version"
 )
 
+// 1。连接上lookup之后发送Identify指定，把当前client的信息发过去，然后lookup返回给当前lookupPeer Info对象
+// 2。注册topic和channel到lookup
 func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 	return func(lp *lookupPeer) {
 		ci := make(map[string]interface{})
@@ -48,7 +50,7 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 			}
 		}
 
-		// build all the commands first so we exit the lock(s) as fast as possible
+		// build all the commands first so we exit the lock(s) as fast as possible 向lookup注册 topic和channel
 		var commands []*nsq.Command
 		n.RLock()
 		for _, topic := range n.topicMap {
@@ -74,10 +76,13 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 		}
 	}
 }
-
+// 0。建立到lookup的连接
+// 1。定时发心跳，干掉不用的conn
+// 2。监听本节点的channel和topic的添加和删除，并把对应的信息通知lookup
+// 3。lookup配置的地址变化时，重新建立连接并剔除过期的连接
 func (n *NSQD) lookupLoop() {
-	var lookupPeers []*lookupPeer
-	var lookupAddrs []string
+	var lookupPeers []*lookupPeer //当前已经建立的连接
+	var lookupAddrs []string      //当前已经建立的连接的地址
 	connect := true
 
 	hostname, err := os.Hostname()
@@ -91,22 +96,24 @@ func (n *NSQD) lookupLoop() {
 	for {
 		if connect {
 			for _, host := range n.getOpts().NSQLookupdTCPAddresses {
-				if in(host, lookupAddrs) {
+				if in(host, lookupAddrs) { //是否连接已存在
 					continue
 				}
 				n.logf(LOG_INFO, "LOOKUP(%s): adding peer", host)
 				lookupPeer := newLookupPeer(host, n.getOpts().MaxBodySize, n.logf,
 					connectCallback(n, hostname))
-				lookupPeer.Command(nil) // start the connection
+				lookupPeer.Command(nil) // start the connection  建立连接
 				lookupPeers = append(lookupPeers, lookupPeer)
 				lookupAddrs = append(lookupAddrs, host)
 			}
 			n.lookupPeers.Store(lookupPeers)
 			connect = false
 		}
-
+		// 1。定时发心跳，干掉不用的conn
+		// 2。监听本节点的channel和topic的添加和删除，并把对应的信息通知lookup
+		// 3。lookup配置的地址变化时，重新建立连接并剔除过期的连接
 		select {
-		case <-ticker:
+		case <-ticker: // 定时发送心跳，有问题的连接close掉
 			// send a heartbeat and read a response (read detects closed conns)
 			for _, lookupPeer := range lookupPeers {
 				n.logf(LOG_DEBUG, "LOOKUPD(%s): sending heartbeat", lookupPeer)

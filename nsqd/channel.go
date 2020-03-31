@@ -35,41 +35,42 @@ type Consumer interface {
 // messages, timeouts, requeuing, etc.
 type Channel struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
-	requeueCount uint64
-	messageCount uint64
-	timeoutCount uint64
+	requeueCount uint64 // RequeueMessage次数
+	messageCount uint64  //写入饿的message个数
+	timeoutCount uint64  // processInFlightQueue调用次数
 
 	sync.RWMutex
 
-	topicName string
-	name      string
+	topicName string //topicName
+	name      string //channel name
 	ctx       *context
 
-	backend BackendQueue
+	backend BackendQueue // 相当于二级缓存
 
-	memoryMsgChan chan *Message
-	exitFlag      int32
+	memoryMsgChan chan *Message // 内存队列
+	exitFlag      int32         // 标价channel是否已经被close活着exit  1-代表 close/exit
 	exitMutex     sync.RWMutex
 
 	// state tracking
-	clients        map[int64]Consumer
-	paused         int32
-	ephemeral      bool
-	deleteCallback func(*Channel)
+	clients        map[int64]Consumer // consumer map
+	paused         int32              //暂停
+	ephemeral      bool           // 是否是临时channel
+	deleteCallback func(*Channel) // 删除channel的时候回调该函数，（如果当前是临时channel，并且client都关闭了也会调用该函数，这种情况下会自动删除channel）
 	deleter        sync.Once
 
 	// Stats tracking
 	e2eProcessingLatencyStream *quantile.Quantile
 
 	// TODO: these can be DRYd up
-	deferredMessages map[MessageID]*pqueue.Item
+	deferredMessages map[MessageID]*pqueue.Item   // 为deferredPQ中的消息去重，十几消息是存储在deferredPQ中的，是个优先级队列
 	deferredPQ       pqueue.PriorityQueue
 	deferredMutex    sync.Mutex
-	inFlightMessages map[MessageID]*Message
+	inFlightMessages map[MessageID]*Message   // 这个就是检查队列中是否已经有该msg了
 	inFlightPQ       inFlightPqueue
 	inFlightMutex    sync.Mutex
 }
 
+// 创建新的channel，序列化元数据到磁盘，创建backend。通知其他线程创建新的channel。
 // NewChannel creates a new instance of the Channel type and returns a pointer
 func NewChannel(topicName string, channelName string, ctx *context,
 	deleteCallback func(*Channel)) *Channel {
@@ -95,7 +96,7 @@ func NewChannel(topicName string, channelName string, ctx *context,
 
 	c.initPQ()
 
-	if strings.HasSuffix(channelName, "#ephemeral") {
+	if strings.HasSuffix(channelName, "#ephemeral") { // 临时channel使用假的二级缓存。
 		c.ephemeral = true
 		c.backend = newDummyBackendQueue()
 	} else {
@@ -104,7 +105,7 @@ func NewChannel(topicName string, channelName string, ctx *context,
 			lg.Logf(opts.Logger, opts.LogLevel, lg.LogLevel(level), f, args...)
 		}
 		// backend names, for uniqueness, automatically include the topic...
-		backendName := getBackendName(topicName, channelName)
+		backendName := getBackendName(topicName, channelName) // topicName:channelName
 		c.backend = diskqueue.New(
 			backendName,
 			ctx.nsqd.getOpts().DataPath,
@@ -122,6 +123,7 @@ func NewChannel(topicName string, channelName string, ctx *context,
 	return c
 }
 
+// 清空inFlightPQ ，deferredPQ中的数据
 func (c *Channel) initPQ() {
 	pqSize := int(math.Max(1, float64(c.ctx.nsqd.getOpts().MemQueueSize)/10))
 
@@ -151,6 +153,7 @@ func (c *Channel) Close() error {
 	return c.exit(false)
 }
 
+// 1.通知删除notify 2.清空所有client 3.清空数据结构和memoryMsgChan和backenddisk 3.内存中的数据落盘
 func (c *Channel) exit(deleted bool) error {
 	c.exitMutex.Lock()
 	defer c.exitMutex.Unlock()
@@ -208,6 +211,7 @@ finish:
 	return c.backend.Empty()
 }
 
+// 把memoryMsgChan inFlightMessages deferredMessages中的数据都写到backend中
 // flush persists all the messages in internal memory buffers to the backend
 // it does not drain inflight/deferred because it is only called in Close()
 func (c *Channel) flush() error {
@@ -253,6 +257,7 @@ finish:
 	return nil
 }
 
+// 个人认为是还没有被消费的数据
 func (c *Channel) Depth() int64 {
 	return int64(len(c.memoryMsgChan)) + c.backend.Depth()
 }
@@ -287,7 +292,7 @@ func (c *Channel) doPause(pause bool) error {
 func (c *Channel) IsPaused() bool {
 	return atomic.LoadInt32(&c.paused) == 1
 }
-
+// 如果memoryMsgChan有位置就写到memoryMsgChan（很快就消费了，还减少磁盘io，但是可能丢失数据），没有就写到backend
 // PutMessage writes a Message to the queue
 func (c *Channel) PutMessage(m *Message) error {
 	c.RLock()
@@ -319,12 +324,12 @@ func (c *Channel) put(m *Message) error {
 	}
 	return nil
 }
-
+// 放入延迟队列deferredPQ,时间点是
 func (c *Channel) PutMessageDeferred(msg *Message, timeout time.Duration) {
 	atomic.AddUint64(&c.messageCount, 1)
 	c.StartDeferredTimeout(msg, timeout)
 }
-
+// 重新设置了msg的pri,重新设置超时时间
 // TouchMessage resets the timeout for an in-flight message
 func (c *Channel) TouchMessage(clientID int64, id MessageID, clientMsgTimeout time.Duration) error {
 	msg, err := c.popInFlightMessage(clientID, id)
@@ -348,7 +353,7 @@ func (c *Channel) TouchMessage(clientID int64, id MessageID, clientMsgTimeout ti
 	c.addToInFlightPQ(msg)
 	return nil
 }
-
+// 删除一个消息从in-flight中
 // FinishMessage successfully discards an in-flight message
 func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
 	msg, err := c.popInFlightMessage(clientID, id)
@@ -368,6 +373,7 @@ func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
 // `timeoutMs`  > 0 - asynchronously wait for the specified timeout
 //     and requeue a message (aka "deferred requeue")
 //
+// 把消息取出来然后按照timeout塞进去。
 func (c *Channel) RequeueMessage(clientID int64, id MessageID, timeout time.Duration) error {
 	// remove from inflight first
 	msg, err := c.popInFlightMessage(clientID, id)
@@ -426,7 +432,7 @@ func (c *Channel) RemoveClient(clientID int64) {
 		go c.deleter.Do(func() { c.deleteCallback(c) })
 	}
 }
-
+// 往InFlight写消息
 func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout time.Duration) error {
 	now := time.Now()
 	msg.clientID = clientID
@@ -439,7 +445,7 @@ func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout tim
 	c.addToInFlightPQ(msg)
 	return nil
 }
-
+// 根据时间决定优先级
 func (c *Channel) StartDeferredTimeout(msg *Message, timeout time.Duration) error {
 	absTs := time.Now().Add(timeout).UnixNano()
 	item := &pqueue.Item{Value: msg, Priority: absTs}
@@ -463,7 +469,7 @@ func (c *Channel) pushInFlightMessage(msg *Message) error {
 	c.inFlightMutex.Unlock()
 	return nil
 }
-
+// 从 inFlightMessages这个map里面删除一个msg
 // popInFlightMessage atomically removes a message from the in-flight dictionary
 func (c *Channel) popInFlightMessage(clientID int64, id MessageID) (*Message, error) {
 	c.inFlightMutex.Lock()
@@ -480,13 +486,13 @@ func (c *Channel) popInFlightMessage(clientID int64, id MessageID) (*Message, er
 	c.inFlightMutex.Unlock()
 	return msg, nil
 }
-
+// msg写入InFlight队列
 func (c *Channel) addToInFlightPQ(msg *Message) {
 	c.inFlightMutex.Lock()
 	c.inFlightPQ.Push(msg)
 	c.inFlightMutex.Unlock()
 }
-
+// 从inFlightPQ这个队列中移除msg
 func (c *Channel) removeFromInFlightPQ(msg *Message) {
 	c.inFlightMutex.Lock()
 	if msg.index == -1 {
@@ -497,7 +503,7 @@ func (c *Channel) removeFromInFlightPQ(msg *Message) {
 	c.inFlightPQ.Remove(msg.index)
 	c.inFlightMutex.Unlock()
 }
-
+// 写入DeferredPQ map，防止重复添加
 func (c *Channel) pushDeferredMessage(item *pqueue.Item) error {
 	c.deferredMutex.Lock()
 	// TODO: these map lookups are costly
@@ -511,7 +517,7 @@ func (c *Channel) pushDeferredMessage(item *pqueue.Item) error {
 	c.deferredMutex.Unlock()
 	return nil
 }
-
+// Deferredmap中删除
 func (c *Channel) popDeferredMessage(id MessageID) (*pqueue.Item, error) {
 	c.deferredMutex.Lock()
 	// TODO: these map lookups are costly
@@ -524,13 +530,13 @@ func (c *Channel) popDeferredMessage(id MessageID) (*pqueue.Item, error) {
 	c.deferredMutex.Unlock()
 	return item, nil
 }
-
+// 添加到DeferredPQ
 func (c *Channel) addToDeferredPQ(item *pqueue.Item) {
 	c.deferredMutex.Lock()
 	heap.Push(&c.deferredPQ, item)
 	c.deferredMutex.Unlock()
 }
-
+// 懂Deferred中取出来msg然后put到channel中
 func (c *Channel) processDeferredQueue(t int64) bool {
 	c.exitMutex.RLock()
 	defer c.exitMutex.RUnlock()
@@ -561,7 +567,7 @@ func (c *Channel) processDeferredQueue(t int64) bool {
 exit:
 	return dirty
 }
-
+// 从inflight中取出来一个放到channel中
 func (c *Channel) processInFlightQueue(t int64) bool {
 	c.exitMutex.RLock()
 	defer c.exitMutex.RUnlock()

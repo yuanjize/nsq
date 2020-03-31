@@ -43,23 +43,23 @@ type Client interface {
 
 type NSQD struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
-	clientIDSequence int64
+	clientIDSequence int64  // CLIENTID，一个递增的数值。
 
 	sync.RWMutex
 
-	opts atomic.Value
+	opts atomic.Value // 存储Options
 
-	dl        *dirlock.DirLock
-	isLoading int32
+	dl        *dirlock.DirLock //目录锁
+	isLoading int32            // 1- loading metadata
 	errValue  atomic.Value
 	startTime time.Time
 
-	topicMap map[string]*Topic
+	topicMap map[string]*Topic // key topicName-value topic
 
 	clientLock sync.RWMutex
 	clients    map[int64]Client
 
-	lookupPeers atomic.Value
+	lookupPeers atomic.Value // 所有的lookup连接
 
 	tcpServer     *tcpServer
 	tcpListener   net.Listener
@@ -67,16 +67,17 @@ type NSQD struct {
 	httpsListener net.Listener
 	tlsConfig     *tls.Config
 
-	poolSize int
+	poolSize int // 当前垃圾回收线程池的大小
 
-	notifyChan           chan interface{}
-	optsNotificationChan chan struct{}
-	exitChan             chan int
+	notifyChan           chan interface{} // 监听topic/channel的创建/删除
+	optsNotificationChan chan struct{}    // 监听nsqlookupd_tcp_addresses/log_level配置变化
+	exitChan             chan int         // 服务推出
 	waitGroup            util.WaitGroupWrapper
 
 	ci *clusterinfo.ClusterInfo
 }
 
+// listener都dial一下
 func New(opts *Options) (*NSQD, error) {
 	var err error
 
@@ -119,12 +120,14 @@ func New(opts *Options) (*NSQD, error) {
 		return nil, errors.New("--node-id must be [0,1024)")
 	}
 
+	// StatsdPrefix包含ip和port，最后以点结尾
 	if opts.StatsdPrefix != "" {
 		var port string
 		_, port, err = net.SplitHostPort(opts.HTTPAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse HTTP address (%s) - %s", opts.HTTPAddress, err)
 		}
+		// 192.168.0.1:80--> 192_168_0_1_80
 		statsdHostKey := statsd.HostKey(net.JoinHostPort(opts.BroadcastAddress, port))
 		prefixWithHost := strings.Replace(opts.StatsdPrefix, "%s", statsdHostKey, -1)
 		if prefixWithHost[len(prefixWithHost)-1] != '.' {
@@ -323,17 +326,20 @@ func writeSyncFile(fn string, data []byte) error {
 	return err
 }
 
+/*
+根据元数据，恢复topic和channel，并开始message pump
+*/
 func (n *NSQD) LoadMetadata() error {
 	atomic.StoreInt32(&n.isLoading, 1)
 	defer atomic.StoreInt32(&n.isLoading, 0)
 
-	fn := newMetadataFile(n.getOpts())
+	fn := newMetadataFile(n.getOpts()) // 创建元数据文件
 
-	data, err := readOrEmpty(fn)
+	data, err := readOrEmpty(fn) // 读取文件里面的msg
 	if err != nil {
 		return err
 	}
-	if data == nil {
+	if data == nil { // 文件没有元数据
 		return nil // fresh start
 	}
 
@@ -343,7 +349,7 @@ func (n *NSQD) LoadMetadata() error {
 		return fmt.Errorf("failed to parse metadata in %s - %s", fn, err)
 	}
 
-	for _, t := range m.Topics {
+	for _, t := range m.Topics { //恢复topic
 		if !protocol.IsValidTopicName(t.Name) {
 			n.logf(LOG_WARN, "skipping creation of invalid topic %s", t.Name)
 			continue
@@ -352,7 +358,7 @@ func (n *NSQD) LoadMetadata() error {
 		if t.Paused {
 			topic.Pause()
 		}
-		for _, c := range t.Channels {
+		for _, c := range t.Channels { // 恢复channels
 			if !protocol.IsValidChannelName(c.Name) {
 				n.logf(LOG_WARN, "skipping creation of invalid channel %s", c.Name)
 				continue
@@ -367,6 +373,7 @@ func (n *NSQD) LoadMetadata() error {
 	return nil
 }
 
+// topic和channel元数据持久化
 func (n *NSQD) PersistMetadata() error {
 	// persist metadata about what topics/channels we have, across restarts
 	fileName := newMetadataFile(n.getOpts())
@@ -376,7 +383,7 @@ func (n *NSQD) PersistMetadata() error {
 	js := make(map[string]interface{})
 	topics := []interface{}{}
 	for _, topic := range n.topicMap {
-		if topic.ephemeral {
+		if topic.ephemeral { //临时topic
 			continue
 		}
 		topicData := make(map[string]interface{})
@@ -457,6 +464,8 @@ func (n *NSQD) Exit() {
 	n.logf(LOG_INFO, "NSQ: bye")
 }
 
+// 如果是启动时调用，那么就是为了从磁盘读取文件并创建topic
+// 否则从lookupserver中拿到所有的channel并get（没有就创建channel）
 // GetTopic performs a thread safe operation
 // to return a pointer to a Topic object (potentially new)
 func (n *NSQD) GetTopic(topicName string) *Topic {
@@ -500,7 +509,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 			n.logf(LOG_WARN, "failed to query nsqlookupd for channels to pre-create for topic %s - %s", t.name, err)
 		}
 		for _, channelName := range channelNames {
-			if strings.HasSuffix(channelName, "#ephemeral") {
+			if strings.HasSuffix(channelName, "#ephemeral") { //没有客户端的话不创建临时channel
 				continue // do not create ephemeral channel with no consumer client
 			}
 			t.GetChannel(channelName)
@@ -509,7 +518,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 		n.logf(LOG_ERROR, "no available nsqlookupd to query for channels to pre-create for topic %s", t.name)
 	}
 
-	// now that all channels are added, start topic messagePump
+	// now that all channels are added, start topic messagePump 开始吐消息
 	t.Start()
 	return t
 }
@@ -550,6 +559,7 @@ func (n *NSQD) DeleteExistingTopic(topicName string) error {
 	return nil
 }
 
+// 通知新建channel,如果系统当前没有正在加载元数据，那么就把元数据序列化到磁盘(因为channel增加了，元数据也变了)
 func (n *NSQD) Notify(v interface{}) {
 	// since the in-memory metadata is incomplete,
 	// should not persist metadata while loading it.
@@ -574,6 +584,7 @@ func (n *NSQD) Notify(v interface{}) {
 	})
 }
 
+// 获取所有channel切片
 // channels returns a flat slice of all channels in all topics
 func (n *NSQD) channels() []*Channel {
 	var channels []*Channel
@@ -601,13 +612,13 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 		idealPoolSize = n.getOpts().QueueScanWorkerPoolMax
 	}
 	for {
-		if idealPoolSize == n.poolSize {
+		if idealPoolSize == n.poolSize { // 新的线程池大==老的 那就啥都不做
 			break
-		} else if idealPoolSize < n.poolSize {
+		} else if idealPoolSize < n.poolSize { // 新的线程池大小<老的 那就干掉一些线程
 			// contract
 			closeCh <- 1
 			n.poolSize--
-		} else {
+		} else { // 新的线程池大小>老的 添加线程
 			// expand
 			n.waitGroup.Wrap(func() {
 				n.queueScanWorker(workCh, responseCh, closeCh)
@@ -618,11 +629,11 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 }
 
 // queueScanWorker receives work (in the form of a channel) from queueScanLoop
-// and processes the deferred and in-flight queues
+// and processes the deferred and in-flight queues  新建垃圾回收线程并开始工作
 func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, closeCh chan int) {
 	for {
 		select {
-		case c := <-workCh:
+		case c := <-workCh: // 来了活儿
 			now := time.Now().UnixNano()
 			dirty := false
 			if c.processInFlightQueue(now) {

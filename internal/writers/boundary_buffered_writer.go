@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"io"
 )
-
+// 包了个Buffer
 type BoundaryBufferedWriter struct {
 	bw *bufio.Writer
 }

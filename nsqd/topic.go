@@ -25,23 +25,24 @@ type Topic struct {
 	channelMap        map[string]*Channel
 	backend           BackendQueue
 	memoryMsgChan     chan *Message
-	startChan         chan int
+	startChan         chan int // 开始messagePump
 	exitChan          chan int
-	channelUpdateChan chan int
+	channelUpdateChan chan int // channel被删除的时候发的通知
 	waitGroup         util.WaitGroupWrapper
-	exitFlag          int32
+	exitFlag          int32 // topic close/exit
 	idFactory         *guidFactory
 
 	ephemeral      bool
 	deleteCallback func(*Topic)
 	deleter        sync.Once
 
-	paused    int32
+	paused    int32 // 代表是否暂停
 	pauseChan chan int
 
 	ctx *context
 }
 
+// 创建topic，开始message dump , 通知newTopic建成
 // Topic constructor
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
 	t := &Topic{
@@ -88,6 +89,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 	return t
 }
 
+// 开始message pump
 func (t *Topic) Start() {
 	select {
 	case t.startChan <- 1:
@@ -100,6 +102,7 @@ func (t *Topic) Exiting() bool {
 	return atomic.LoadInt32(&t.exitFlag) == 1
 }
 
+// 存在返回，不存在创建
 // GetChannel performs a thread safe operation
 // to return a pointer to a Channel object (potentially new)
 // for the given Topic
@@ -144,6 +147,7 @@ func (t *Topic) GetExistingChannel(channelName string) (*Channel, error) {
 	return channel, nil
 }
 
+// 删除channel，如果当前topic没有channel了并且是个临时topic，那么直接删除topic
 // DeleteExistingChannel removes a channel from the topic only if it exists
 func (t *Topic) DeleteExistingChannel(channelName string) error {
 	t.Lock()

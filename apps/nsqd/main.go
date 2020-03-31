@@ -37,7 +37,12 @@ func (p *program) Init(env svc.Environment) error {
 	}
 	return nil
 }
-
+/*
+1.解析配置文件
+2.根据元数据文件重建topic和channel
+3.持久化元数据文件
+4.在新的协程启动后台进程
+*/
 func (p *program) Start() error {
 	opts := nsqd.NewOptions()
 
@@ -68,11 +73,11 @@ func (p *program) Start() error {
 	}
 	p.nsqd = nsqd
 
-	err = p.nsqd.LoadMetadata()
+	err = p.nsqd.LoadMetadata()    //从文件中读取元数据并恢复topic和channel
 	if err != nil {
 		logFatal("failed to load metadata - %s", err)
 	}
-	err = p.nsqd.PersistMetadata()
+	err = p.nsqd.PersistMetadata() //持久化topic和channel
 	if err != nil {
 		logFatal("failed to persist metadata - %s", err)
 	}

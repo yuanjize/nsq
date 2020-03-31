@@ -130,7 +130,7 @@ type ChannelsByName struct {
 }
 
 func (c ChannelsByName) Less(i, j int) bool { return c.Channels[i].name < c.Channels[j].name }
-
+// 返回topic & topic & client Stats
 func (n *NSQD) GetStats(topic string, channel string, includeClients bool) []TopicStats {
 	n.RLock()
 	var realTopics []*Topic
