@@ -43,7 +43,7 @@ type Client interface {
 
 type NSQD struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
-	clientIDSequence int64  // CLIENTID，一个递增的数值。
+	clientIDSequence int64 // CLIENTID，一个递增的数值。
 
 	sync.RWMutex
 
@@ -69,8 +69,8 @@ type NSQD struct {
 
 	poolSize int // 当前垃圾回收线程池的大小
 
-	notifyChan           chan interface{} // 监听topic/channel的创建/删除
-	optsNotificationChan chan struct{}    // 监听nsqlookupd_tcp_addresses/log_level配置变化
+	notifyChan           chan interface{} // 监听topic/channel的创建/删除，并时时修改lookup
+	optsNotificationChan chan struct{}    // 监听nsqlookupd_tcp_addresses/log_level配置变化 ，配置更新了
 	exitChan             chan int         // 服务推出
 	waitGroup            util.WaitGroupWrapper
 
@@ -185,6 +185,7 @@ func (n *NSQD) swapOpts(opts *Options) {
 	n.opts.Store(opts)
 }
 
+// 一些配置更新了
 func (n *NSQD) triggerOptsNotification() {
 	select {
 	case n.optsNotificationChan <- struct{}{}:
@@ -246,6 +247,7 @@ func (n *NSQD) RemoveClient(clientID int64) {
 	n.clientLock.Unlock()
 }
 
+// 1.建立tcp和http server 2.defer/inflight扫描  3.建立lookup之间的链接并等待topic / channel等的变化并通知lookup  4.stats收集
 func (n *NSQD) Main() error {
 	ctx := &context{n}
 
@@ -277,10 +279,10 @@ func (n *NSQD) Main() error {
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop)
-	n.waitGroup.Wrap(n.lookupLoop)
+	n.waitGroup.Wrap(n.queueScanLoop)  // 定时扫描inflight和 defer队列中是否有可以被消费的消息
+	n.waitGroup.Wrap(n.lookupLoop) // 和lookup建立连接，监听 look up地址/topic/channel的变化并通知lookup
 	if n.getOpts().StatsdAddress != "" {
-		n.waitGroup.Wrap(n.statsdLoop)
+		n.waitGroup.Wrap(n.statsdLoop) // METRICS
 	}
 
 	err := <-exitCh
@@ -629,7 +631,7 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 }
 
 // queueScanWorker receives work (in the form of a channel) from queueScanLoop
-// and processes the deferred and in-flight queues  新建垃圾回收线程并开始工作
+// and processes the deferred and in-flight queues
 func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, closeCh chan int) {
 	for {
 		select {
@@ -662,6 +664,7 @@ func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, close
 //
 // If QueueScanDirtyPercent (default: 25%) of the selected channels were dirty,
 // the loop continues without sleep.
+// 搞定一个线程池 定时扫描channel 的优先级队列有没有到达可以被消费的时间了，如果到达了允许消费，每次扫描指定数量的channel中如果满足条件的超过一定比例，那么继续扫描。否则等到下次扫描时间到达
 func (n *NSQD) queueScanLoop() {
 	workCh := make(chan *Channel, n.getOpts().QueueScanSelectionCount)
 	responseCh := make(chan bool, n.getOpts().QueueScanSelectionCount)
@@ -675,7 +678,7 @@ func (n *NSQD) queueScanLoop() {
 
 	for {
 		select {
-		case <-workTicker.C:
+		case <-workTicker.C:  //扫描间隔到了
 			if len(channels) == 0 {
 				continue
 			}

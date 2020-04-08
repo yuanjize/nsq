@@ -76,6 +76,7 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 		}
 	}
 }
+
 // 0。建立到lookup的连接
 // 1。定时发心跳，干掉不用的conn
 // 2。监听本节点的channel和topic的添加和删除，并把对应的信息通知lookup
@@ -83,7 +84,7 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 func (n *NSQD) lookupLoop() {
 	var lookupPeers []*lookupPeer //当前已经建立的连接
 	var lookupAddrs []string      //当前已经建立的连接的地址
-	connect := true
+	connect := true               // 是否要重新建立连接
 
 	hostname, err := os.Hostname()
 	if err != nil {

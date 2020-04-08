@@ -56,7 +56,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		if client.HeartbeatInterval > 0 {
 			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2))
 		} else {
-			client.SetReadDeadline(zeroTime)
+			client.SetReadDeadline(zeroTime)  // 不允许超时
 		}
 		// 读出参数并执行命令
 		// ReadSlice does not allocate new space for the data each request

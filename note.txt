@@ -21,3 +21,62 @@ config：
 
 https://aws.amazon.com/cn/blogs/architecture/exponential-backoff-and-jitter/
 client多的i 后还会还会gn
+
+
+Discovery：
+客户端要连接所有的lookup，然后定时发送/lookup?topic=xx 请求，然后把这些结果合并起来，查看哪些nsqd（生产者）是我们没有连接的，然后连上就好了（broadcast_address：tcp_port代表一个连接地址）。
+
+Connection Handling
+ consumer对于每一个关心的topic要有单独的tcp连接。
+ 当有一个新消费者连接建立的时候要按顺序发送下面几条指令：
+    1.魔数
+    2.IDENTIFY
+    3.SUB指令，指定要订阅的topic
+    4.一个带有初始数量的RDY指令（count是1）
+
+Reconnection：
+   断连的时候应该重新去连接。
+   1.如果client是直接连接nsqd的那么，锻炼之后使用backoff指数算法进行重试（8s,16s,32s...）
+   2.如果客户端是通过lookup获取nsqd然后连接的那么会在每次从lookup中定时拉取配置的时候定时重连。
+
+Feature Negotiation
+   IDENTIFY命令可以设置nsqd端的元数据，更改客户端的设置。
+     1.某些情况下客户端需要修改nsqd和client交互的属性。
+     2.nsqd对于IDENTIFY命令会返回一些json payload给客户端，客户端需要遵守这些规范。
+   例如client发送给nsqd的IDENTIFY请求：
+     {
+         "client_id": "metrics_increment",  //就是一个id，给nsqd标志我们自己的
+         "hostname": "app01.bitly.net",     //就是一个id，给nsqd标志我们自己的
+         "heartbeat_interval": 30000,       // 心跳间隔
+         "feature_negotiation": true  // 表明nsqd的响应可以带一个json payload过来。
+     }
+      如果nsqd不支持feature negotiation 那么就就返回一个OK，如果支持就返回：
+      {
+          "max_rdy_count": 2500,
+          "version": "0.2.20-alpha"
+      }
+
+Data Flow and Heartbeats
+  对于消费者来说，数据流是从nsqd到client这个数据流是异步的，client使用异步io和thread/goroutine来处理数据。
+  客户端还要响应nsqd定时发过来的心跳，默认是30s，client响应一个NOP消息。
+  错误处理使用的是fail fast，如果接收到的是一个无效的指令，如果可以容忍那么就返回一个错误resp，如果不能容忍那么就直接close连接。
+
+Message Handling
+  io loop得到消息之后应该路由消息得到配置的handler进行处理。
+  nsqd希望在配置的超时时间内得到client的回复，有下面几种可能出现的场景：
+    1。client的handler告诉nsqd，消息处理成功
+    2。。。。。。。。。。。。。。，消息处理失败
+    3。。。。。。。。。。。。。。，client需要更多的时间去处理
+    4。。。。。。。。。。。。。。，当前正在被处理的消息超时了，nsqd直接把它重新入队。
+    前面三种情况应该返回指定的command：
+      FIN：代表客户端处理完了消息或者不想在重试处理，在nsdq看来这个消息就是告诉它客户端消费完了，它可以丢掉这个消息了。
+      REQ：代表客户端需要让这个消息重新入队，客户端发出这个命令的时候可以指定一个defer之间，如果不指定那么客户端会根据max attempts去计算一个时间。如果消息超过了max attempts那么应该直接丢弃，然后执行一个特定的回调。
+      TOUCH：如果客户端在nsqd的超时时间之前不鞥完成任务，那么可以发一个TOUCH指令到服务端，nsqd接到这个指令会重新设置timer。可以重复的发送TOUCH指令，直到发送该消息的FIN，REQ，或者累计时间达到了nsqd配置的max_msg_timeout。
+             客户端不应该自动发送TOUCH指令。
+     如果发出去的消息超时了，那么nsqd会把它自动重新入队。
+     message又一个属性是attempt的次数，客户端如果怕发现这个值超过了我们配置的值，那么应该丢弃这个msg然后调一个回调。默认的回调是写个日志，用户可以自定义。
+
+
+
+
+
