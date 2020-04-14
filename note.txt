@@ -78,5 +78,12 @@ Message Handling
 
 
 
+通过Delegate模式，msg发消息给conn，conn发消息给consumer
+Producer和nsqd是一对一，并且连接的建立是惰性的，也就是第一次push消息的时候才会建立连接
+Producer closeChan代表conn是否被close了。responseChan消息发出去成功，errorChan消息发送失败。exitChan会不发消息，没发出去的消息进行直接返回错误。
+stopFlag 就不允许再次连接了
+
+
+
 
 
